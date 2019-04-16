@@ -275,13 +275,15 @@ void KgDecoder::ReadImg (KgFrame* inFrame)
     //  TODO clear pixels after done and array after done
     uint32_t imgSize = frame->imgWidth * frame->imgHeight;
     uint8_t* pixels = new uint8_t[imgSize];     //for img data
-    uint8_t* suffix = new uint8_t[MAX_BIT_SIZE];
-    std::fill_n (suffix, MAX_BIT_SIZE, 0);
-    uint16_t* prefix = new uint16_t[MAX_BIT_SIZE];
-    std::fill_n (prefix, MAX_BIT_SIZE, 0);
-    uint8_t* pixStream = new uint8_t[MAX_BIT_SIZE];
-    std::fill_n (pixStream, MAX_BIT_SIZE, 0);
-    uint32_t streamPos = 0;
+    uint32_t pixPos = 0;
+    std::fill_n (pixels, imgSize,  0);
+    std::array<uint8_t, MAX_BIT_SIZE>* suffix = new  std::array<uint8_t, MAX_BIT_SIZE>;
+    suffix->fill (0);
+    std::array<uint16_t, MAX_BIT_SIZE>* prefix = new  std::array<uint16_t, MAX_BIT_SIZE>;
+    prefix->fill (0);
+    std::array<uint8_t, MAX_BIT_SIZE>* pixstack = new  std::array<uint8_t, MAX_BIT_SIZE>;
+    pixstack->fill (0); 
+    uint32_t stackPos = 0;
 
     //read init code size and initialize code
     uint8_t initSize = 0;   
@@ -291,77 +293,92 @@ void KgDecoder::ReadImg (KgFrame* inFrame)
     uint32_t newEntry = endofimg + 1;
     uint16_t realCoSize =(uint16_t) initSize + 1;  //max num of bits = 12
     uint32_t codeMask = (1 << realCoSize) - 1;
-
-    for (uint32_t i = 0; i < clearcode; i++) {
-        suffix[i] = i;
+    for (uint32_t t = 0; t < clearcode; t++) {
+        suffix->at (t) = t;
     }
-    //read block data and process data
-    uint8_t blosifield = 0;
-    ReadByte (&blosifield, 1);
-    if (blosifield == 0)    return; //no image data
-    ReadByte (&dablock->at(0), (uint32_t)blosifield);
-    uint8_t blockCur = 0, firstInd =0;
-    uint32_t bitbench = 0; 
-    uint16_t bitsCount = 0, code = 0, oldCo = 0xffff;
-    while (blockCur <= dablock->size ()) {
-        uint16_t currCode = 0;
-        if (bitsCount < realCoSize) {
-            bitbench |= ((uint32_t)dablock->at (blockCur)) << bitsCount;
-            blockCur++;
-            bitsCount += 8;
-        }
-        //extract code
-        code = codeMask & bitbench;
-        bitbench >>= realCoSize;
-        bitsCount -= realCoSize;
-        // process code
-        if (code == clearcode) {
-            realCoSize = initSize + 1;
-            codeMask = (1 << realCoSize) - 1;
-            oldCo = 0xffff;
-            newEntry = endofimg + 1;
-            continue; // perform next loop
-        }
-        if (code == endofimg)    return; //break out of the loop
-        if (oldCo == 0xffff) {      // 1st code
+
+    uint8_t blocksizeField = 0 ;
+    uint32_t bitBench = 0;
+    uint16_t bitcounts = 0, oldcode = 0xffff, currCode = 0, dataPos = 0, code =0, firstInd = 0;
+    uint32_t i = 0;
+    for (i = 0; i < imgSize;) {
+        if (stackPos == 0) {
+            if (blocksizeField == 0) {     //either u done with block or 1st time reading img data
+                dataPos = 0;
+                ReadByte (&blocksizeField, 1);
+                if (blocksizeField == 0) {
+                    return;
+                }//after read, still 0, meaning end of img data or error
+                ReadByte (&dablock->at (0), blocksizeField); // read data to block
+            }
+            //getting next data from block
+            if (bitcounts < realCoSize) {
+                bitBench = bitBench | (uint32_t(dablock->at (dataPos++) )<< bitcounts);
+                blocksizeField--;
+                bitcounts += 8;
+                continue;
+            }
+            // extract code
+            code = codeMask & bitBench;
+            bitBench >>= realCoSize;
+            bitcounts -= realCoSize;
+            // process code
+            if (code == clearcode) {
+                realCoSize = initSize + 1;
+                newEntry = endofimg + 1;
+                codeMask = (1 << realCoSize) - 1;
+                oldcode = 0xffff;
+                continue;
+            }
+            if (code == endofimg) {
+                return; // done with img
+            }
+            if (oldcode == 0xffff) {
+            //1st time reading
+            pixstack->at(stackPos++) = (uint8_t)  code;
             firstInd = code;
-            oldCo = code;
-            pixStream[streamPos++] = firstInd;
-            continue; // perform next loop
+            oldcode = code;
+            continue;
+            }
+            currCode = code;
+            if (code == (uint16_t)newEntry) {     // it doesn't exist
+                pixstack->at (stackPos++) = (uint8_t) firstInd;
+                code = oldcode;
+            }
+            while (code > clearcode) {  //loop all the way down
+                pixstack->at (stackPos++) = suffix->at (code);
+                code = prefix->at (code);
+            }
+            firstInd = (uint16_t)suffix->at (code);
+            pixstack->at (stackPos++) = (uint8_t)firstInd;
+            // add new  entry
+            if (newEntry < MAX_BIT_SIZE) {
+                prefix->at(newEntry) = oldcode;
+                suffix->at(newEntry) = (uint8_t)firstInd;
+            }
+            newEntry++;
+            if (((newEntry & codeMask) == 0) && newEntry < MAX_BIT_SIZE) {
+                realCoSize++;
+                codeMask = codeMask * 2 + 1;
+            }
+            oldcode = currCode;
         }
-        currCode = code;
-        if (code == newEntry) {      //new code not exist in table
-            pixStream[streamPos++] = firstInd;
-            code = oldCo;
-        }
-        //loop all the way back to the init table
-        while (code > clearcode) {  //this haven't included the 1st index of sequence that code represents, cus it stops before the last 1
-            pixStream[streamPos++] = suffix[code];
-            code = prefix[code];
-        }
-        firstInd = suffix[code];
-        pixStream[streamPos++] = firstInd;
-        //add new code to prefix, suffix
-        if (newEntry < MAX_BIT_SIZE) {
-            suffix[newEntry] = firstInd;
-            prefix[newEntry] = oldCo;
-        }
-        newEntry++;
-        if ((newEntry & codeMask) == 0 && (newEntry < MAX_BIT_SIZE)) {
-            realCoSize++;
-            codeMask = (codeMask * 2) + 1;
-        }
-        oldCo = currCode;
+        pixels[pixPos++] = pixstack->at(--stackPos);
+        //then move to next pixel
+        i++;
     }
-
-    delete[] suffix;
-    suffix = nullptr;
-    delete[] prefix;
-    prefix = nullptr;
-    delete[] pixStream;
-    pixStream = nullptr;
+    if (pixPos < imgSize) {
+        for (; pixPos < imgSize; pixPos++) {
+            pixels[pixPos] = 0;
+        }
+    }
+    
     delete[] pixels;
     pixels = nullptr;
-
-     
+    delete[] suffix->data ();
+    delete[] prefix->data ();
+    delete[] pixstack->data ();
+    suffix = nullptr;
+    prefix = nullptr;
+    pixstack = nullptr;
 }
