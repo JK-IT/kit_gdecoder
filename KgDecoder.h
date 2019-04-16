@@ -13,7 +13,6 @@
 #define IMG_DECLARE 0x2c
 #define GIF_TERM 0x3b
 
-#define MAX_STACK_SIZE 4096
 
 class KgDecoder {
 public:
@@ -25,13 +24,13 @@ public:
 
 private:
 
+    static const uint32_t MAX_BIT_SIZE = 4096;
     uint8_t* gifData = nullptr;
     uint32_t gifSize = 0;
     uint8_t gifByte = 0;
     kColor* gloColTable = nullptr;
     kColor* actTable = nullptr;
     std::array<uint8_t, 256>* dablock = new std::array<uint8_t, 256>;
-    CodeEntry* codetable = new CodeEntry[MAX_STACK_SIZE];
     std::vector<KgFrame> frameContainer;
     /*
         information of gif file header

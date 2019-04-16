@@ -269,86 +269,99 @@ void KgDecoder::ReadImg (KgFrame* inFrame)
  
     */
     // clear code value = 1 << lzw init code size, 
-    // ==> end of info code value = clearcode value + 1;
+    // ==> end of image code value = clearcode value + 1;
+    // new available code = end of image + 1;
 
-    //  TODO clear pixels after done
+    //  TODO clear pixels after done and array after done
     uint32_t imgSize = frame->imgWidth * frame->imgHeight;
     uint8_t* pixels = new uint8_t[imgSize];     //for img data
-    uint16_t* prefix = new uint16_t[MAX_STACK_SIZE];
-    uint8_t* pixStack = new uint8_t[MAX_STACK_SIZE + 1];
-    uint32_t stackCount = 0;
-    uint8_t* suffix = new uint8_t[MAX_STACK_SIZE];
+    uint8_t* suffix = new uint8_t[MAX_BIT_SIZE];
+    std::fill_n (suffix, MAX_BIT_SIZE, 0);
+    uint16_t* prefix = new uint16_t[MAX_BIT_SIZE];
+    std::fill_n (prefix, MAX_BIT_SIZE, 0);
+    uint8_t* pixStream = new uint8_t[MAX_BIT_SIZE];
+    std::fill_n (pixStream, MAX_BIT_SIZE, 0);
+    uint32_t streamPos = 0;
 
-    
-    uint32_t initCodesize = 0;
-    //this is actually LZW INIT CODE  size
-    ReadByte (&initCodesize, 1); 
+    //read init code size and initialize code
+    uint8_t initSize = 0;   
+    ReadByte (&initSize, 1);
+    uint32_t clearcode = 1 << initSize;
+    uint32_t endofimg = clearcode + 1;
+    uint32_t newEntry = endofimg + 1;
+    uint16_t realCoSize =(uint16_t) initSize + 1;  //max num of bits = 12
+    uint32_t codeMask = (1 << realCoSize) - 1;
 
-    uint32_t   clearCo = 1 << initCodesize;  // code index == code value
-    uint32_t    eofCo = clearCo + 1;
-    uint32_t    newCo = eofCo + 1;
-    uint32_t    maxCo = clearCo * 2 - 1; //the max index can be used before increasing num of bits per code
-    //      available bits to represent code never go over 12 bits
-    uint32_t    realCosize = initCodesize + 1;    //this is the code size actually used  , the index before is occupied by init value table
-
-        //use code mask to return the actual code value need to read
-    uint32_t    codeMask = (1 << realCosize) - 1;   //if  real code size : 3, then mask = 111
-
-    uint32_t    bitBench = 0;    //read in data | current data
-    uint32_t    bitsCount = 0;
-    uint8_t     blockIter = 0;    //max for sub block is ff, so u dont need more then 16 bits
-    uint32_t bloSiField = 0;
-    uint32_t code = 0 , oldCod = -1, currCode =0 , lstColIndex = 0;
-
-    for (int i = 0; i < clearCo; i++) {
-        prefix[i] = 0;
+    for (uint32_t i = 0; i < clearcode; i++) {
         suffix[i] = i;
     }
-
-    // MAKE IT A LOOP, keep read in sub block till the length of sub block is 0x00
-    //read in SUB BLOCK DATA 
-    do {
-        ReadByte (&bloSiField, 1);   //read block size field
-        if (bloSiField == 0 || ReadByte (&dablock->at (0), bloSiField) == 0) {
-            return; // error or end of image data
+    //read block data and process data
+    uint8_t blosifield = 0;
+    ReadByte (&blosifield, 1);
+    if (blosifield == 0)    return; //no image data
+    ReadByte (&dablock->at(0), (uint32_t)blosifield);
+    uint8_t blockCur = 0, firstInd =0;
+    uint32_t bitbench = 0; 
+    uint16_t bitsCount = 0, code = 0, oldCo = 0xffff;
+    while (blockCur <= dablock->size ()) {
+        uint16_t currCode = 0;
+        if (bitsCount < realCoSize) {
+            bitbench |= ((uint32_t)dablock->at (blockCur)) << bitsCount;
+            blockCur++;
+            bitsCount += 8;
         }
-        blockIter = 0; // reset iterator
-        //HOW TO KNOW IF BLOCK END
-        while (blockIter != bloSiField) {  
-            if (bitsCount < realCosize) {
-                //if remaining bits < realcode size then u don't need to read in
-                bitBench = ((uint32_t)dablock->at (blockIter)) << bitsCount;
-                blockIter++;
-                bitsCount += 8; // u read in 8 bits
-                //extract the code
-                code = (codeMask & bitBench);
-                bitBench >>= realCosize;
-                bitsCount -= realCosize;
-            }
-            else {
-                //reuse earlier bit bench
-                code = (codeMask & bitBench);
-                bitBench >>= realCosize;
-                bitsCount -= realCosize;
-            }
-
-            if (code == clearCo) {
-                realCosize = initCodesize + 1;
-                newCo = eofCo + 1;
-                oldCod = -1;
-                codeMask = (1 << realCosize) - 1;
-                continue; //so it comes out then read next one
-            }
-            if (code != eofCo) {
-                if (code == codeMask && realCosize != 12) {    //max number of bits is 12
-                    realCosize++;
-                    codeMask = codeMask * 2 + 1;     //another way to calculate the next limit
-                }
-                std::cout << std::hex <<  code << std::endl;
-                continue;
-            }
+        //extract code
+        code = codeMask & bitbench;
+        bitbench >>= realCoSize;
+        bitsCount -= realCoSize;
+        // process code
+        if (code == clearcode) {
+            realCoSize = initSize + 1;
+            codeMask = (1 << realCoSize) - 1;
+            oldCo = 0xffff;
+            newEntry = endofimg + 1;
+            continue; // perform next loop
         }
+        if (code == endofimg)    return; //break out of the loop
+        if (oldCo == 0xffff) {      // 1st code
+            firstInd = code;
+            oldCo = code;
+            pixStream[streamPos++] = firstInd;
+            continue; // perform next loop
+        }
+        currCode = code;
+        if (code == newEntry) {      //new code not exist in table
+            pixStream[streamPos++] = firstInd;
+            code = oldCo;
+        }
+        //loop all the way back to the init table
+        while (code > clearcode) {  //this haven't included the 1st index of sequence that code represents, cus it stops before the last 1
+            pixStream[streamPos++] = suffix[code];
+            code = prefix[code];
+        }
+        firstInd = suffix[code];
+        pixStream[streamPos++] = firstInd;
+        //add new code to prefix, suffix
+        if (newEntry < MAX_BIT_SIZE) {
+            suffix[newEntry] = firstInd;
+            prefix[newEntry] = oldCo;
+        }
+        newEntry++;
+        if ((newEntry & codeMask) == 0 && (newEntry < MAX_BIT_SIZE)) {
+            realCoSize++;
+            codeMask = (codeMask * 2) + 1;
+        }
+        oldCo = currCode;
+    }
 
-    } while (bloSiField != 0);
+    delete[] suffix;
+    suffix = nullptr;
+    delete[] prefix;
+    prefix = nullptr;
+    delete[] pixStream;
+    pixStream = nullptr;
+    delete[] pixels;
+    pixels = nullptr;
+
      
 }
