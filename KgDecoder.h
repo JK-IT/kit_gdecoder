@@ -55,8 +55,9 @@ private:
    */
   uint32_t dataInd = 0; //this use to keep track of bytes already read
   uint32_t ReadByte(void* byt, uint32_t bysi);
-  void SkipBlock ();
-  uint32_t ReadBlock (std::array<uint8_t, 256>& blockcontainer, uint32_t size);
+  //to modify a pointer value, aka address pointed to by pointer , 
+        //u need to use *& - reference to pointer, for easier think of it like reference to value
+  void SkipBlocks (uint8_t*& imgDat);
 
   bool ReadHeader ();
   void ReadgifData ();
@@ -65,8 +66,8 @@ private:
   //        need to dereference to return the underlying value - pointer to kcolor
   //        *whattable = kcolor*, aka the kcolor* u passed in
   void ReadColTable (uint8_t& bitpercol, kColor ** whattable);
-  void ReadImg (KgFrame* paramFrame = nullptr);
-  void ReadExtnImg ();
+  bool ReadImgControlExt (uint8_t* & imgDat, KgFrame& inframe);     //pass in directly the obj cuz inframe is reference so it already dereferenced
+  void ReadImg (uint8_t* & imgDat , KgFrame& inframe); //pass in address of obj
 
 };
 #endif // !K_GIF_DECODER_H

@@ -43,6 +43,8 @@ public:
     //uint32_t localColTableSize = 0;
     kColor* localColTab = nullptr;
 
+    //image pixel data or 
+
 private:
     void Cleanup () noexcept;
     void MoveFrom (KgFrame& src) noexcept;

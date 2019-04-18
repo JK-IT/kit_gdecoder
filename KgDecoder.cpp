@@ -33,12 +33,12 @@ void KgDecoder::SetData(uint8_t* data, uint32_t fisi){
 uint32_t KgDecoder::ReadByte (void* byt, uint32_t bysi)
 {
     if (gifData == nullptr || gifSize == 0)
-        return 0;
+        return 0xffffffff;  // = -1
     try{
         memcpy (byt, this->gifData, bysi);
     }
     catch (std::exception& excep) {
-        return 0; // mean error no byte read
+        return 0xffffffff; // =-1
     }
     
     this->gifData += bysi;
@@ -93,29 +93,29 @@ void KgDecoder::ReadgifData () {
                 break;
             }
             case INTRO_EXT: {
-                uint8_t labelbyte = 0;
-                this->ReadByte(&labelbyte, 1);
-                switch (labelbyte)
+                uint8_t introbyte = 0;
+                this->ReadByte(&introbyte, 1);
+                switch (introbyte)
                 {
                     case APP_EXT: {
                         //blockfield [11]bytes-data blockfield appid data1 data2 terminator 
-                        uint8_t applicationauthen [11];
-                        this->ReadByte(&labelbyte, 1); // read block size field, fixed size 11
-                        ReadByte(&applicationauthen[0], labelbyte);
+                        uint8_t applicationauthen [11]; //array on stack is freed automatically by system
+                        this->ReadByte(&introbyte, 1); // read block size field, fixed size 11
+                        ReadByte(&applicationauthen[0], introbyte);
                         if(0 == memcmp(&applicationauthen[0], "NETSCAPE2.0", 11)){
                             //read netscape application
-                            ReadByte(&labelbyte, 1); // block size field after authen
+                            ReadByte(&introbyte, 1); // block size field after authen
                             std::fill_n(applicationauthen, 11, 0);
-                            ReadByte(&applicationauthen[0], labelbyte);
+                            ReadByte(&applicationauthen[0], introbyte);
                             if(applicationauthen[0] == 0x01){
                                 this->loopcount = applicationauthen[2] << 8 | applicationauthen[1];
                             }
                         } else {
                             //skip byte
-                            SkipBlock ();
+                            SkipBlocks (gifData);
                         }
                         // skip block terminator
-                        ReadByte (&labelbyte, 1);
+                        ReadByte (&introbyte, 1);
                         break;
                     }
    
@@ -123,23 +123,34 @@ void KgDecoder::ReadgifData () {
                     {
                         //blockfield textgridleft textgridtop textwidth textheight charcellwidth charcellheight
             //text-fg-color-ind text-bg-color-ind [plain text data : sub data block] terminator
-                        ReadByte(&labelbyte, 1); //block field fixed value 12
+                        ReadByte(&introbyte, 1); //block field fixed value 12
                         //skip it, cus we dont have enough info to process
-                        gifData += labelbyte;
+                        gifData += introbyte;
                         //now skip data block
-                        SkipBlock ();
+                        SkipBlocks (gifData);
                         //read terminate byte of ext block
-                        ReadByte (&labelbyte, 1);
+                        ReadByte (&introbyte, 1);
                         break;
                     }
     
                     case COMM_EXT: {
-                        SkipBlock ();
+                        SkipBlocks (gifData);
                         break;
                     }
 
                     case GRAPHIC_EXT: {
-                        ReadExtnImg();
+                        //always come before and followed by image data
+                        KgFrame imgFrame;
+                        if (!ReadImgControlExt (gifData ,imgFrame)) {
+                            //not successful 
+                            break;
+                        }
+                        ReadByte (&introbyte, 1);
+                        if (introbyte != 0x2c) {
+                            break;
+                        }
+                        ReadImg (gifData ,imgFrame);
+                        introbyte = 0;
                         break;
                     }   
                     default: {
@@ -147,7 +158,7 @@ void KgDecoder::ReadgifData () {
                         break;
                     }
                 }
-                //break for this case
+                //break for this intro ext case
                 break;
             }
             case GIF_TERM:
@@ -177,82 +188,81 @@ void KgDecoder::ReadColTable (uint8_t& bitpercol, kColor** whattable)
     actTable = *whattable;
 }
 
-void KgDecoder::SkipBlock ()                                
+bool KgDecoder::ReadImgControlExt (uint8_t*& imgDat, KgFrame& inframe)  //require 1st byte will be block size field
 {
+    /*          ...... ext id, graphic control id
+                    Block Size[1 byte] -- packfield [1 byte] -- delay time [ 2 bytes] -- transColor ind [1 byte] -- block terminator[1 byte]   
+                    default - 4 bytes
+                                              [7-5]                 [4-2]                         [1]                            [0]
+     <Packed Fields>  =     Reserved        Disposal Method    User Input Flag    Transparent Color Flag
+                                             3 Bits                 3 Bits                         1 Bit                           1 Bit                                             
+    */
+    uint8_t extBlockfield = 0;  
+    if (ReadByte (&extBlockfield, 1) == 0xffffffff) {
+        return false;
+    };
+    if (extBlockfield != 0x04) {   //default block size field of this extension block
+        return false;
+    }
+    ReadByte (&dablock->at (0), extBlockfield);
+    uint8_t tempByte = 0;
+    //process packed field
+    tempByte = dablock->at (0);   //pack field
+    inframe.disposal = tempByte & 0x1c;
+    inframe.transColFlag = tempByte & 0x01;
+    //get delay time
+    memcpy (&inframe.delayTime, &dablock->at (1), 2);
+    // get transparent color index
+    memcpy (&inframe.transColIndex, &dablock->at (3), 1);
+    //read next terminator block of this extention
+    ReadByte (&extBlockfield, 1);
+    return true;
+}
+
+void KgDecoder::SkipBlocks (uint8_t*& data)                                
+{
+    //read in next byte, then advanced the pointer pos to by the value of byte
     uint8_t blosize = 0;
     //this will continue reading with current pointer position
     //till it reaches terminator block
     do {
-        ReadByte (&blosize,1 );
+        memcpy (&blosize, data, 1);
+        data += 1;
         if (blosize == 0) {
             //is this the end of extension or just sub data block
             return;
         }
         else {
-            gifData += blosize;
+            data += blosize;
         }
     } while (1);
 }
 
-uint32_t KgDecoder::ReadBlock (std::array<uint8_t, 256>& blockcontainer, uint32_t size)
-{
-    uint32_t res = 0;
-    res = ReadByte (&blockcontainer.at(0), size);
-    return res;
-}
 
-void KgDecoder::ReadExtnImg ()
-{
-    KgFrame tempFrame;
-    uint8_t dabyte;
-    //read graphic
-    this->ReadByte (&dabyte, 1);  //block field  - fixed size 4 bytes
-    ReadByte (&dabyte, 1); // pack field
-    //shifst right by 2, then perform (&0x07) to get disposal value
-    tempFrame.disposal = ((dabyte & 0x1c) >> 2);
-    tempFrame.transColFlag = (dabyte & 0x01);
-    ReadByte (&tempFrame.delayTime, 2);
-    ReadByte (&tempFrame.transColIndex, 1);  //doesn't matter will check when we need
-    ReadByte (&dabyte, 1); //read in block terminator to advance the cur pos of pointer
-    //read img data after graphic ext
-    // make sure the next byte will be img declare byte
-    ReadByte (&dabyte, 1);
-    if (dabyte != 0x2c) {
-        perror ("Gif file is corrupted");
-        return;
-    }
-    this->ReadImg (&tempFrame);
-    
-}
+void KgDecoder::ReadImg (uint8_t*& imgDat ,KgFrame& inFrame)
+{    /*     img seperator byte already read before pass in here    
+        (img seperator 0x2c)-- img_left(2 bytes)    img_top(2 bytes)   img_width(2 bytes)     img_height(2 bytes)     packed_field (1 byte)
 
-void KgDecoder::ReadImg (KgFrame* inFrame)
-{
-    //if set it to nullptr, exp will be thrown cuz it is nullptr so no memory allocate
-    KgFrame* frame = new KgFrame;
-    uint8_t  imgbyte = 0;
-    if (inFrame != nullptr) {
-        //perform move action
-        *frame = std::move (*inFrame);
-        //call destructor on argument frame , so restore the resource after moving
-        inFrame->~KgFrame ();
+<Packed Fields>  =  Local Color Table Flag - Interlace Flag -  Sort Flag -      Reserved -          Size of Local Color Table                                                          
+                                            1 Bit[7]                    1 Bit [6]             1 Bit [5]        2 Bits[4-3]              3 Bits [2-0]
+         //right after this will be local color table if exists
+     */
+    ReadByte (&inFrame.imgLeft, 2);
+    ReadByte (&inFrame.imgTop, 2);
+    ReadByte (&inFrame.imgWidth, 2);
+    ReadByte (&inFrame.imgHeight, 2);
+    uint8_t tempByte = 0;
+    ReadByte (&tempByte, 1);
+    inFrame.localColFlag = (tempByte & 0x80) >> 7;
+    inFrame.interlaceFlag = (tempByte & 0x40) >> 6;
+    inFrame.sortedColFlag = (tempByte & 0x20) >> 5;
+    inFrame.bpc = tempByte & 0x07; // only last 3 bits are used , bits per color
+    if (inFrame.localColFlag) {
+        ReadColTable (inFrame.bpc, &inFrame.localColTab);
+        //after this, the gif data pointer will be at next byte or initial code size of image
     }
-    // if not just perform reading img descriptor and then lzw-img- data code
-    ReadByte (&frame->imgLeft, 2);
-    ReadByte (&frame->imgTop, 2);
-    ReadByte (&frame->imgWidth, 2);
-    ReadByte (&frame->imgHeight, 2);
-    //read pack field of img descriptor, there will be no terminator block for this block, just like logical screen descriptor
-    ReadByte (&imgbyte, 1);
-    if (imgbyte != 0x00) {     //if packed == 0x00, then skip all  cuz all just false or 0
-        frame->localColFlag = (imgbyte & 0x80) >> 7;
-        frame->interlaceFlag = (imgbyte & 0x40) >> 6;
-        if (frame->localColFlag) {
-            //check sorted. if flag is false then skip this
-            frame->sortedColFlag = (imgbyte & 0x20) >> 5;
-            frame->bpc = (imgbyte & 0x07);
-            ReadColTable (frame->bpc, &frame->localColTab);   //this fn will set active color table pointer
-        }
-    }
+    //if local table not exist then then next byte will be initial code size
+     
     //decode incoming code 
         //process then out put data for pixel
     /*
@@ -272,113 +282,110 @@ void KgDecoder::ReadImg (KgFrame* inFrame)
     // ==> end of image code value = clearcode value + 1;
     // new available code = end of image + 1;
 
-    //  TODO clear pixels after done and array after done
-    uint32_t imgSize = frame->imgWidth * frame->imgHeight;
-    uint8_t* pixels = new uint8_t[imgSize];     //for img data
-    uint32_t pixPos = 0;
-    std::fill_n (pixels, imgSize,  0);
-    std::array<uint8_t, MAX_BIT_SIZE>* suffix = new  std::array<uint8_t, MAX_BIT_SIZE>;
-    suffix->fill (0);
-    std::array<uint16_t, MAX_BIT_SIZE>* prefix = new  std::array<uint16_t, MAX_BIT_SIZE>;
-    prefix->fill (0);
-    std::array<uint8_t, MAX_BIT_SIZE>* pixstack = new  std::array<uint8_t, MAX_BIT_SIZE>;
-    pixstack->fill (0); 
-    uint32_t stackPos = 0;
-
-    //read init code size and initialize code
-    uint8_t initSize = 0;   
-    ReadByte (&initSize, 1);
-    uint32_t clearcode = 1 << initSize;
+    uint32_t imgSize = inFrame.imgWidth * inFrame.imgHeight;
+    //image array
+    uint8_t* imgPix = new uint8_t[imgSize];
+    std::fill_n (&imgPix[0], imgSize, 0);   //init with 0 value
+    uint32_t pixlocation = 0;
+    //temporary image array
+    std::vector<uint8_t> tmpPixels(MAX_BIT_SIZE, 0);
+    uint32_t tmplocation = 0;
+    // 2 columns of working code container
+    /* position, aka code
+         code xtracted   1st     2nd      3rd   CC   EOI   6th     7th     8th      9th
+        main indexes [    #1     #2        #3    cc     eoi    1         3       3          2
+        pre indexes   [     0       0           0      0      0       3        1       6         8  
+    */
+    std::vector<uint16_t> preIndexes(MAX_BIT_SIZE, 0);
+    std::vector<uint8_t>mainIndexes (MAX_BIT_SIZE, 0);
+    //read INIT CODE size of gif
+    uint8_t initCosize = 0;
+    ReadByte (&initCosize, 1);
+    uint32_t clearcode = 1 << initCosize;
     uint32_t endofimg = clearcode + 1;
     uint32_t newEntry = endofimg + 1;
-    uint16_t realCoSize =(uint16_t) initSize + 1;  //max num of bits = 12
-    uint32_t codeMask = (1 << realCoSize) - 1;
-    for (uint32_t t = 0; t < clearcode; t++) {
-        suffix->at (t) = t;
+    uint32_t realCosize = initCosize + 1, firstInd = 0, preCode = 0xffffffff,
+        currCode = 0, code = 0, bitbend = 0, bitcount = 0;
+    uint32_t codemask = (1 << realCosize) - 1;
+    //init main array with code, this will be init table with single sequence for each code
+    for (int i = 0; i < clearcode; i++) {
+        mainIndexes[i] = i;
     }
-
-    uint8_t blocksizeField = 0 ;
-    uint32_t bitBench = 0;
-    uint16_t bitcounts = 0, oldcode = 0xffff, currCode = 0, dataPos = 0, code =0, firstInd = 0;
-    uint32_t i = 0;
-    for (i = 0; i < imgSize;) {
-        if (stackPos == 0) {
-            if (blocksizeField == 0) {     //either u done with block or 1st time reading img data
-                dataPos = 0;
-                ReadByte (&blocksizeField, 1);
-                if (blocksizeField == 0) {
-                    return;
-                }//after read, still 0, meaning end of img data or error
-                ReadByte (&dablock->at (0), blocksizeField); // read data to block
+    while(pixlocation <= imgSize) {
+        //read block data till end,
+            //extract code then add code to indexes table and temp pix stack
+            //adding pix from temp stack to img pix
+        ReadByte (&tempByte, 1);    //get data block size
+        if (tempByte == 0) {
+            return; //done with img data
+        }
+        ReadByte (&dablock->at (0), tempByte);
+        auto beginIt = dablock->begin ();
+        auto endIt = dablock->end ();
+        while (beginIt < endIt) {
+            while (bitcount < realCosize) {
+                bitbend |= *beginIt;
+                beginIt++;
+                bitcount += 8;
             }
-            //getting next data from block
-            if (bitcounts < realCoSize) {
-                bitBench = bitBench | (uint32_t(dablock->at (dataPos++) )<< bitcounts);
-                blocksizeField--;
-                bitcounts += 8;
-                continue;
-            }
-            // extract code
-            code = codeMask & bitBench;
-            bitBench >>= realCoSize;
-            bitcounts -= realCoSize;
-            // process code
+                //extract code
+            code = bitbend & codemask;
+            bitbend >>= realCosize;
+            bitcount -= realCosize;
+                //process code
             if (code == clearcode) {
-                realCoSize = initSize + 1;
+                //reset everything
+                realCosize = initCosize + 1;
+                codemask = (1 << realCosize) - 1;
                 newEntry = endofimg + 1;
-                codeMask = (1 << realCoSize) - 1;
-                oldcode = 0xffff;
+                preCode = 0xffffffff;
+                continue;   //escape for next loop
+            }
+            if (preCode == 0xffffffff) {    //1st code after clear code
+                preCode = code;
+                firstInd = code;
+                //output the code to code stream
+                imgPix[pixlocation++] = static_cast<uint8_t>( code);
                 continue;
-            }
-            if (code == endofimg) {
-                return; // done with img
-            }
-            if (oldcode == 0xffff) {
-            //1st time reading
-            pixstack->at(stackPos++) = (uint8_t)  code;
-            firstInd = code;
-            oldcode = code;
-            continue;
             }
             currCode = code;
-            if (code == (uint16_t)newEntry) {     // it doesn't exist
-                pixstack->at (stackPos++) = (uint8_t) firstInd;
-                code = oldcode;
+            if (code == newEntry) {//code doesn't exist
+                //put 1st index of precode and value of precode  to temp stack
+                tmpPixels[tmplocation++] = static_cast<uint8_t>(firstInd);
+                code = preCode;
             }
-            while (code > clearcode) {  //loop all the way down
-                pixstack->at (stackPos++) = suffix->at (code);
-                code = prefix->at (code);
+            while (code > clearcode) {//loop over precode till single value code, aka not sequence
+                tmpPixels[tmplocation++] = mainIndexes[code];
+                code = preIndexes[code]; 
             }
-            firstInd = (uint16_t)suffix->at (code);
-            pixstack->at (stackPos++) = (uint8_t)firstInd;
-            // add new  entry
-            if (newEntry < MAX_BIT_SIZE) {
-                prefix->at(newEntry) = oldcode;
-                suffix->at(newEntry) = (uint8_t)firstInd;
+            firstInd = static_cast<uint32_t>(mainIndexes[code]);
+            tmpPixels[tmplocation++] = static_cast<uint8_t>(firstInd);
+            //add to code book
+            if (newEntry < MAX_BIT_SIZE) { // #0 -> #4095
+                mainIndexes[newEntry] = firstInd;
+                preIndexes[newEntry] = preCode;
+                newEntry++;
             }
-            newEntry++;
-            if (((newEntry & codeMask) == 0) && newEntry < MAX_BIT_SIZE) {
-                realCoSize++;
-                codeMask = codeMask * 2 + 1;
+            //check if new entry pass the limit after increasing
+            if (((newEntry & codemask) == 0) && (realCosize < 0x0c)) {
+                //inc the number of bits will be read
+                realCosize++;
+                codemask = (codemask * 2) + 1;
             }
-            oldcode = currCode;
+            //move value from temp pix to img pix
+            do {
+                if (tmplocation == 0) {
+                    imgPix[pixlocation++] = tmpPixels[tmplocation];
+                    break;
+                }
+                imgPix[pixlocation++] = tmpPixels[--tmplocation];
+            } while (tmplocation >= 0);
         }
-        pixels[pixPos++] = pixstack->at(--stackPos);
-        //then move to next pixel
-        i++;
-    }
-    if (pixPos < imgSize) {
-        for (; pixPos < imgSize; pixPos++) {
-            pixels[pixPos] = 0;
-        }
+        
     }
     
-    delete[] pixels;
-    pixels = nullptr;
-    delete[] suffix->data ();
-    delete[] prefix->data ();
-    delete[] pixstack->data ();
-    suffix = nullptr;
-    prefix = nullptr;
-    pixstack = nullptr;
+    delete[] imgPix;
+    imgPix = nullptr;
+    preIndexes.clear ();
+    mainIndexes.clear ();
 }
