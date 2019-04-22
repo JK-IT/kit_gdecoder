@@ -13,7 +13,7 @@ int main()
     KgDecoder kgifde;
     FILE* giffile;
     //this is how you open file in vs c++
-    giffile = fopen ("C:\\Users\\Kit\\Desktop\\Kit Gif Decoder\\decoder\\tenor.gif", "rb");
+    giffile = fopen ("C:\\Users\\Kit\\Desktop\\kit_gdecoder\\me-you.gif", "rb");
     if (giffile == nullptr) {
         std::cout << " file cannot open " << std::endl;
     }

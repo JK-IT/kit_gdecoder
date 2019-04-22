@@ -8,6 +8,7 @@ KgFrame::KgFrame ()
 KgFrame::~KgFrame ()
 {
     std::cout << "Frame destructor is called " << std::endl;
+    std::cout << " -----------||||" << std::endl;
     Cleanup ();
 }
 

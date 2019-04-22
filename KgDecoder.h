@@ -24,7 +24,8 @@ public:
 
 private:
 
-    static const uint32_t MAX_BIT_SIZE = 4096;
+    static const uint32_t MAX_BIT_SIZE = (uint32_t) (4096);
+    static const uint32_t MAX_BIT = (uint32_t)( 0x0c);
     uint8_t* gifData = nullptr;
     uint32_t gifSize = 0;
     uint8_t gifByte = 0;
@@ -32,6 +33,7 @@ private:
     kColor* actTable = nullptr;
     std::array<uint8_t, 256>* dablock = new std::array<uint8_t, 256>;
     std::vector<KgFrame> frameContainer;
+    uint32_t frameCount = 0;
     /*
         information of gif file header
     */

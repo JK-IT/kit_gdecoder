@@ -37,7 +37,7 @@ uint32_t KgDecoder::ReadByte (void* byt, uint32_t bysi)
     try{
         memcpy (byt, this->gifData, bysi);
     }
-    catch (std::exception& excep) {
+    catch (const std::exception& excep) {
         return 0xffffffff; // =-1
     }
     
@@ -90,6 +90,9 @@ void KgDecoder::ReadgifData () {
             case IMG_DECLARE: {
                 
                 //this may move or copy the content of value
+                KgFrame imgfra;
+                std::cout << "no graphic control " << std::endl;
+                ReadImg (this->gifData, imgfra);
                 break;
             }
             case INTRO_EXT: {
@@ -150,7 +153,7 @@ void KgDecoder::ReadgifData () {
                             break;
                         }
                         ReadImg (gifData ,imgFrame);
-                        introbyte = 0;
+                        ReadByte(&introbyte, 1);  //read in terminator block of sub data series
                         break;
                     }   
                     default: {
@@ -264,6 +267,9 @@ void KgDecoder::ReadImg (uint8_t*& imgDat ,KgFrame& inFrame)
     //if local table not exist then then next byte will be initial code size
      
     //decode incoming code 
+        /*
+            the sub datablock will be followed by terminator block, block field of sub data does not include the terminator block
+        */
         //process then out put data for pixel
     /*
     only 1 CC in each table
@@ -283,109 +289,152 @@ void KgDecoder::ReadImg (uint8_t*& imgDat ,KgFrame& inFrame)
     // new available code = end of image + 1;
 
     uint32_t imgSize = inFrame.imgWidth * inFrame.imgHeight;
-    //image array
-    uint8_t* imgPix = new uint8_t[imgSize];
-    std::fill_n (&imgPix[0], imgSize, 0);   //init with 0 value
-    uint32_t pixlocation = 0;
-    //temporary image array
-    std::vector<uint8_t> tmpPixels(MAX_BIT_SIZE, 0);
-    uint32_t tmplocation = 0;
-    // 2 columns of working code container
-    /* position, aka code
-         code xtracted   1st     2nd      3rd   CC   EOI   6th     7th     8th      9th
-        main indexes [    #1     #2        #3    cc     eoi    1         3       3          2
-        pre indexes   [     0       0           0      0      0       3        1       6         8  
-    */
-    std::vector<uint16_t> preIndexes(MAX_BIT_SIZE, 0);
-    std::vector<uint8_t>mainIndexes (MAX_BIT_SIZE, 0);
-    //read INIT CODE size of gif
-    uint8_t initCosize = 0;
-    ReadByte (&initCosize, 1);
-    uint32_t clearcode = 1 << initCosize;
-    uint32_t endofimg = clearcode + 1;
-    uint32_t newEntry = endofimg + 1;
-    uint32_t realCosize = initCosize + 1, firstInd = 0, preCode = 0xffffffff,
-        currCode = 0, code = 0, bitbend = 0, bitcount = 0;
-    uint32_t codemask = (1 << realCosize) - 1;
-    //init main array with code, this will be init table with single sequence for each code
-    for (int i = 0; i < clearcode; i++) {
-        mainIndexes[i] = i;
-    }
-    while(pixlocation <= imgSize) {
-        //read block data till end,
-            //extract code then add code to indexes table and temp pix stack
-            //adding pix from temp stack to img pix
-        ReadByte (&tempByte, 1);    //get data block size
-        if (tempByte == 0) {
-            return; //done with img data
-        }
-        ReadByte (&dablock->at (0), tempByte);
-        auto beginIt = dablock->begin ();
-        auto endIt = dablock->end ();
-        while (beginIt < endIt) {
-            while (bitcount < realCosize) {
-                bitbend |= *beginIt;
-                beginIt++;
-                bitcount += 8;
-            }
-                //extract code
-            code = bitbend & codemask;
-            bitbend >>= realCosize;
-            bitcount -= realCosize;
-                //process code
-            if (code == clearcode) {
-                //reset everything
-                realCosize = initCosize + 1;
-                codemask = (1 << realCosize) - 1;
-                newEntry = endofimg + 1;
-                preCode = 0xffffffff;
-                continue;   //escape for next loop
-            }
-            if (preCode == 0xffffffff) {    //1st code after clear code
-                preCode = code;
-                firstInd = code;
-                //output the code to code stream
-                imgPix[pixlocation++] = static_cast<uint8_t>( code);
-                continue;
-            }
-            currCode = code;
-            if (code == newEntry) {//code doesn't exist
-                //put 1st index of precode and value of precode  to temp stack
-                tmpPixels[tmplocation++] = static_cast<uint8_t>(firstInd);
-                code = preCode;
-            }
-            while (code > clearcode) {//loop over precode till single value code, aka not sequence
-                tmpPixels[tmplocation++] = mainIndexes[code];
-                code = preIndexes[code]; 
-            }
-            firstInd = static_cast<uint32_t>(mainIndexes[code]);
-            tmpPixels[tmplocation++] = static_cast<uint8_t>(firstInd);
-            //add to code book
-            if (newEntry < MAX_BIT_SIZE) { // #0 -> #4095
-                mainIndexes[newEntry] = firstInd;
-                preIndexes[newEntry] = preCode;
-                newEntry++;
-            }
-            //check if new entry pass the limit after increasing
-            if (((newEntry & codemask) == 0) && (realCosize < 0x0c)) {
-                //inc the number of bits will be read
-                realCosize++;
-                codemask = (codemask * 2) + 1;
-            }
-            //move value from temp pix to img pix
-            do {
-                if (tmplocation == 0) {
-                    imgPix[pixlocation++] = tmpPixels[tmplocation];
-                    break;
-                }
-                imgPix[pixlocation++] = tmpPixels[--tmplocation];
-            } while (tmplocation >= 0);
-        }
-        
-    }
+    //pixel array
+    uint8_t* pixels = new uint8_t[imgSize];
+    std::fill_n (pixels, imgSize, 0x0);
+
+    //pix stack array
+    uint8_t* pixstack = new uint8_t[1 << 0x0f];
+    std::fill_n (pixstack, (1 << 0x0f), 0);
+
+    //array tracking
+    uint32_t stackidx = 0, pidx = 0;
+
+    //working code book
+    uint16_t* prebook = new uint16_t[MAX_BIT_SIZE];
+    std::fill_n (prebook, MAX_BIT_SIZE, 0);
+    uint8_t* idxbook = new uint8_t[MAX_BIT_SIZE];
+    std::fill_n (idxbook, MAX_BIT_SIZE, 0); 
+
+    uint32_t code = 0, currCo = 0, lastCo = 0x1001;
+    uint32_t clearcode = 0, endofimg = 0, newEntry = 0, codeMask = 0, initCosize = 0, codesize = 0;
+    uint32_t bitcount = 0, bitbench = 0;
+    uint8_t firstInd = 0;
+    uint32_t byteRead = 0x1001, dablockidx = 0;
     
-    delete[] imgPix;
-    imgPix = nullptr;
-    preIndexes.clear ();
-    mainIndexes.clear ();
+    //read in initial code size
+    if (ReadByte (&initCosize, 1) != 0xffffffff) {
+        clearcode = 1 << initCosize;
+        endofimg = clearcode + 1;
+        newEntry = endofimg + 1;
+        codesize = initCosize + 1;
+        codeMask = (1 << codesize) - 1;
+    }
+    //init idxbook
+    for (uint32_t i = 0; i < clearcode; i++) {
+        idxbook[i] = i;
+    }
+    auto bloxbegin = dablock->begin ();
+    auto bloxend = dablock->end ();
+    while (pidx <= imgSize) {
+        
+        //read and process data block
+        while (bitcount < codesize) {
+            //check block
+            if ((byteRead == 0x1001) || (byteRead == 0)) {   //block is empty || already read
+                if (ReadByte (&tempByte, 1) == 0xffffffff) {
+                    return; //error
+                }
+                else {
+                    if (tempByte == 0) {
+                        break; // end of img data
+                    }
+                    else {
+                        byteRead = ReadByte (&dablock->at (0), tempByte);
+                        bloxbegin = dablock->begin ();
+                        bloxend = dablock->end ();
+                    }
+                }
+            }
+            //read in byte, check if new block need to be read in
+            bitbench |= ((uint32_t)* bloxbegin) << bitcount;
+            bitcount += 8;
+            bloxbegin++;
+            byteRead--;    
+        }
+    // ROAD WORKING
+        //xtract the code
+        code = bitbench & codeMask;
+        bitbench >>= codesize;
+        bitcount -= codesize;
+
+        //process the code
+        if (code == clearcode) {
+            codesize = initCosize + 1;
+            codeMask = (1 << codesize) - 1;
+            newEntry = endofimg + 1;
+            lastCo = 0x1001;
+            std::cout << " Clear code happens and new entry " <<std::hex << newEntry << std::endl;
+            continue;
+        }
+        if (code == endofimg) {
+            std::cout << "Got end of image " << std::endl;
+            break;
+        }
+        if (lastCo == 0x1001) {
+            //1st code after clear
+            firstInd = (uint8_t) code;
+            lastCo = code;
+            pixels[pidx++] = firstInd;
+            continue;
+        }
+        currCo = code;
+        if (code == newEntry) {
+            std::cout << "Found new code " << std::hex << code << std::endl;
+            pixstack[stackidx++] = firstInd; //1st index from last code
+            code = lastCo;
+        }
+        while (code > clearcode) {
+            pixstack[stackidx++] = idxbook[code];
+            code = prebook[code];   
+        }
+        firstInd = idxbook[code];
+        pixstack[stackidx++] = firstInd;
+        //add to book
+        if (newEntry < MAX_BIT_SIZE) {
+            idxbook[newEntry] = firstInd;
+            prebook[newEntry] = lastCo;
+            newEntry++;
+        }
+        lastCo = currCo;
+        if ((newEntry & codeMask) == 0 && (newEntry < MAX_BIT_SIZE)) {
+            codesize += 1;
+            codeMask = (codeMask * 2) + 1;
+        }
+        //move all retrieved pixel to pixel
+        while (stackidx != 0) {
+            //move all pixels to img pixels
+            if (pidx != imgSize) { //after ++, it may be > img size
+                pixels[pidx++] = pixstack[--stackidx];
+            }
+            else {
+                break;
+            }
+        } //while stackidx != 0
+    } //while pidx < imgsize
+    std::cout << "code read success " << std::endl;
+    frameCount++;
+    delete[] pixstack; pixstack = nullptr;
+    delete[] idxbook, prebook, pixels;
+    idxbook = nullptr; prebook = nullptr, pixels = nullptr;
 }
+
+/*  TEST CODE
+for (; code < MAX_BIT_SIZE; code++) {
+        if (code >= 0xff) {
+            prebook[code] = code;
+            idxbook[code] = code;
+        }
+        prebook[code] = code; //contains last code so it may go up 12 bits
+        idxbook[code] = code; //always have 1st idx so only byte
+    }
+//retrieving is ok
+    uint32_t c = prebook[0x100];
+    c = prebook[0x101];
+    c = prebook[0x102];
+    c = prebook[0x800];
+    c = prebook[0xf88];
+    c = prebook[0xfff];
+    c = prebook[0x899];
+
+*/
